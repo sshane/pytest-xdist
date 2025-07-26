@@ -35,6 +35,16 @@ except ImportError:
     def setproctitle(title: str) -> None:
         pass
 
+import time
+tprev = time.monotonic()
+t0 = tprev
+
+import time, sys, os
+_WID = os.environ.get("PYTEST_XDIST_WORKER")  # e.g. "gw0"
+def _wlog(tag, dt):
+    sys.stderr.write(f"test123 [{_WID}] {tag:<28} {dt:0.4f}s\n")
+_t_import_done = time.perf_counter()
+
 
 class Producer:
     """
@@ -53,13 +63,17 @@ class Producer:
 
     def __call__(self, *a: Any, **k: Any) -> None:
         if self.enabled:
-            print(f"[{self.name}]", *a, **k, file=sys.stderr)
+            global tprev
+            tnow = time.monotonic()
+            print(f"[{self.name}]", f'td={tnow - tprev:0.5f}', f't0={tnow - t0:0.5f}', *a, **k, file=sys.stderr)
+            tprev = tnow
 
     def __getattr__(self, name: str) -> Producer:
         return type(self)(name, enabled=self.enabled)
 
 
 def worker_title(title: str) -> None:
+    print('HELLO!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
     try:
         setproctitle(title)
     except Exception:
@@ -127,6 +141,7 @@ class WorkerInteractor:
 
     @pytest.hookimpl
     def pytest_internalerror(self, excrepr: object) -> None:
+        self.log("internal error")
         formatted_error = str(excrepr)
         for line in formatted_error.split("\n"):
             self.log("IERROR>", line)
@@ -134,12 +149,14 @@ class WorkerInteractor:
 
     @pytest.hookimpl
     def pytest_sessionstart(self, session: pytest.Session) -> None:
+        self.log("session start")
         self.session = session
         workerinfo = getinfodict()
         self.sendevent("workerready", workerinfo=workerinfo)
 
     @pytest.hookimpl(hookwrapper=True)
     def pytest_sessionfinish(self, exitstatus: int) -> Generator[None, object, None]:
+        self.log("session finish")
         workeroutput: dict[str, Any] = self.config.workeroutput  # type: ignore[attr-defined]
         # in pytest 5.0+, exitstatus is an IntEnum object
         workeroutput["exitstatus"] = int(exitstatus)
@@ -150,11 +167,13 @@ class WorkerInteractor:
 
     @pytest.hookimpl
     def pytest_collection(self) -> None:
+        self.log("collection start")
         self.sendevent("collectionstart")
 
     def handle_command(
         self, command: tuple[str, dict[str, Any]] | Literal[Marker.SHUTDOWN]
     ) -> None:
+        self.log("handle command")
         if command is Marker.SHUTDOWN:
             self.torun.put(Marker.SHUTDOWN)
             return
@@ -174,6 +193,7 @@ class WorkerInteractor:
             self.steal(kwargs["indices"])
 
     def steal(self, indices: Sequence[int]) -> None:
+        self.log("steal tests")
         """
         Remove tests from the queue.
 
@@ -199,7 +219,7 @@ class WorkerInteractor:
 
     @pytest.hookimpl
     def pytest_runtestloop(self, session: pytest.Session) -> bool:
-        self.log("entering main loop")
+        self.log("runtestloop")
         self.channel.setcallback(self.handle_command, endmarker=Marker.SHUTDOWN)
         self.nextitem_index = self.torun.get()
         while self.nextitem_index is not Marker.SHUTDOWN:
@@ -209,6 +229,7 @@ class WorkerInteractor:
         return True
 
     def run_one_test(self) -> None:
+        self.log("run one test")
         assert isinstance(self.nextitem_index, int)
         self.item_index = self.nextitem_index
         self.nextitem_index = self.torun.get()
@@ -238,6 +259,7 @@ class WorkerInteractor:
         config: pytest.Config,
         items: list[pytest.Item],
     ) -> None:
+        self.log("collection modify items")
         # add the group name to nodeid as suffix if --dist=loadgroup
         if config.getvalue("loadgroup"):
             for item in items:
@@ -252,14 +274,17 @@ class WorkerInteractor:
                 if not gnames:
                     continue
                 item._nodeid = f"{item.nodeid}@{'_'.join(sorted(gnames))}"
+        self.log("collection modify items done",)
 
     @pytest.hookimpl
     def pytest_collection_finish(self, session: pytest.Session) -> None:
+        self.log("collection finish")
         self.sendevent(
             "collectionfinish",
             topdir=str(self.config.rootpath),
             ids=[item.nodeid for item in session.items],
         )
+        self.log("collection finish")
 
     @pytest.hookimpl
     def pytest_runtest_logstart(
@@ -267,6 +292,7 @@ class WorkerInteractor:
         nodeid: str,
         location: tuple[str, int | None, str],
     ) -> None:
+        self.log("runtest_logstart")
         self.sendevent("logstart", nodeid=nodeid, location=location)
 
     @pytest.hookimpl
@@ -275,10 +301,12 @@ class WorkerInteractor:
         nodeid: str,
         location: tuple[str, int | None, str],
     ) -> None:
+        self.log("runtest_logfinish")
         self.sendevent("logfinish", nodeid=nodeid, location=location)
 
     @pytest.hookimpl
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        self.log("runtest_logreport")
         data = self.config.hook.pytest_report_to_serializable(
             config=self.config, report=report
         )
@@ -290,6 +318,7 @@ class WorkerInteractor:
 
     @pytest.hookimpl
     def pytest_collectreport(self, report: pytest.CollectReport) -> None:
+        self.log("collectreport")
         # send only reports that have not passed to controller as optimization (#330)
         if not report.passed:
             data = self.config.hook.pytest_report_to_serializable(
@@ -305,6 +334,7 @@ class WorkerInteractor:
         nodeid: str,
         location: tuple[str, int, str] | None,
     ) -> None:
+        self.log("warning recorded")
         self.sendevent(
             "warning_recorded",
             warning_message_data=serialize_warning_message(warning_message),
@@ -390,6 +420,7 @@ def getinfodict() -> WorkerInfo:
 
 
 def setup_config(config: pytest.Config, basetemp: str | None) -> None:
+    # t = time.monotonic()
     config.option.loadgroup = config.getvalue("dist") == "loadgroup"
     config.option.looponfail = False
     config.option.usepdb = False
@@ -398,6 +429,7 @@ def setup_config(config: pytest.Config, basetemp: str | None) -> None:
     config.option.numprocesses = None
     config.option.maxprocesses = None
     config.option.basetemp = basetemp
+    # print(f"setup_config took {time.monotonic() - t:0.3f} seconds", file=sys.stderr)
 
 
 if __name__ == "__channelexec__":

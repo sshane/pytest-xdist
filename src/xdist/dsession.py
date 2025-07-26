@@ -1,4 +1,5 @@
 from __future__ import annotations
+import time
 
 from collections.abc import Sequence
 from enum import auto
@@ -174,6 +175,7 @@ class DSession:
         node: WorkerController,
         workerinfo: WorkerInfo,
     ) -> None:
+        print('worker_workerready', node, workerinfo, len(self.sched.node2pending), time.monotonic())
         """Emitted when a node first starts up.
 
         This adds the node to the scheduler, nodes continue with
@@ -198,6 +200,7 @@ class DSession:
         The node might not be in the scheduler if it had not emitted
         workerready before shutdown was triggered.
         """
+        print('worker_workerfinished', node.gateway.id, time.monotonic())
         self.config.hook.pytest_testnodedown(node=node, error=None)
         if node.workeroutput["exitstatus"] == 2:  # keyboard-interrupt
             self.shouldstop = f"{node} received keyboard-interrupt"

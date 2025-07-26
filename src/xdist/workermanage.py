@@ -1,5 +1,7 @@
 from __future__ import annotations
+from concurrent.futures import ThreadPoolExecutor
 
+import time
 from collections.abc import Sequence
 import enum
 import fnmatch
@@ -94,22 +96,37 @@ class NodeManager:
     ) -> list[WorkerController]:
         self.config.hook.pytest_xdist_setupnodes(config=self.config, specs=self.specs)
         self.trace("setting up nodes")
-        return [self.setup_node(spec, putevent) for spec in self.specs]
+        t = time.monotonic()
+        # ret = [self.setup_node(spec, putevent) for spec in self.specs]
+        with ThreadPoolExecutor(max_workers=len(self.specs)) as executor:
+            futs = [executor.submit(self.setup_node, spec, putevent) for spec in self.specs]
+            ret = [f.result() for f in futs]
+            print('setup_nodes took %.3f seconds' % (time.monotonic() - t))
+            return ret
 
     def setup_node(
         self,
         spec: execnet.XSpec,
         putevent: Callable[[tuple[str, dict[str, Any]]], None],
     ) -> WorkerController:
+        t = time.monotonic()
+        # print('setting up node with spec:', spec)
         if getattr(spec, "execmodel", None) != "main_thread_only":
             spec = execnet.XSpec(f"execmodel=main_thread_only//{spec}")
+        print('execnet.XSpec:', time.monotonic() - t, spec)
         gw = self.group.makegateway(spec)
+        print('makegateway:', time.monotonic() - t)
         self.config.hook.pytest_xdist_newgateway(gateway=gw)
+        print('hook pytest_xdist_newgateway:', time.monotonic() - t)
         self.rsync_roots(gw)
+        print('rsync_roots:', time.monotonic() - t)
         node = WorkerController(self, gw, self.config, putevent)
+        print('WorkerController:', time.monotonic() - t)
         # Keep the node alive.
         gw.node = node  # type: ignore[attr-defined]
+        print('gw.node = node:', time.monotonic() - t)
         node.setup()
+        print('node.setup:', time.monotonic() - t)
         self.trace("started node %r" % node)
         return node
 
@@ -386,6 +403,7 @@ class WorkerController:
         self.channel.send((name, kwargs))
 
     def notify_inproc(self, eventname: str, **kwargs: object) -> None:
+        # print('FUMMY!')
         self.log(f"queuing {eventname}(**{kwargs})")
         self.putevent((eventname, kwargs))
 
